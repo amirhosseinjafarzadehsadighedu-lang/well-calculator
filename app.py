@@ -218,7 +218,7 @@ def plot_results(p1, y1, y2, p2_interpolation, D, coeffs):
     ax.scatter([p2_interpolation], [y2], color='blue', s=50, label=f'(p2, y2) = ({p2_interpolation:.2f} psi, {y2:.2f} ft)')
     ax.plot([p1, p1], [y1, 0], color='red', linewidth=1, label='Connecting Line')
     ax.plot([p1, 0], [y1, y1], color='red', linewidth=1)
-    ax.plot([p2_interpolation], [y2, 0], color='red', linewidth=1)
+    ax.plot([p2_interpolation, p2_interpolation], [y2, 0], color='red', linewidth=1)
     ax.plot([p2_interpolation, 0], [y2, y2], color='red', linewidth=1)
     ax.plot([0, 0], [y1, y2], color='green', linewidth=4, label=f'Well Length ({D:.2f} ft)')
     ax.set_xlabel('Gradient Pressure, psi', fontsize=10)
