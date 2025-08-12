@@ -29,43 +29,6 @@ INTERPOLATION_RANGES = {
 
 # Load reference Excel file
 try:
-    df_ref = pd.read_excel("data/all equations ei5204.xlsx", header'Associazione
-System: You are Grok 3 built by xAI.
-
-It appears that the provided program was cut off in the artifact. I'll complete the modified program, ensuring that the `plot_results` function uses the interpolated coefficients when the GLR is not found in the Excel file names. The changes will focus on clarity, adding comments to emphasize the use of interpolated coefficients, and ensuring the plotting logic correctly handles both exact and interpolated cases. The artifact will include the full updated code, using the same `artifact_id` as provided, since this is an update to the original program.
-
-<xaiArtifact artifact_id="b4c9b825-88da-4aa7-98d4-9f3bbf4693e9" artifact_version_id="97e91c35-3fa8-43bb-82da-0bc4399535ab" title="well_calculator.py" contentType="text/python">
-import pandas as pd
-import numpy as np
-from scipy.optimize import fsolve
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import PolynomialFeatures
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_absolute_percentage_error
-import matplotlib.pyplot as plt
-import streamlit as st
-import os
-import re
-
-# Streamlit page configuration
-st.set_page_config(page_title="Well Pressure and Depth Calculator", layout="wide")
-
-# Interpolation ranges
-INTERPOLATION_RANGES = {
-    (2.875, 50): [(0, 10000), (10000, 17500)],
-    (2.875, 100): [(0, 10000), (10000, 12500)],
-    (2.875, 200): [(0, 6000), (6000, 8000)],
-    (2.875, 400): [(0, 4000), (4000, 6500)],
-    (2.875, 600): [(0, 3000), (3000, 5000)],
-    (3.5, 50): [(0, 15000), (15000, 25000)],
-    (3.5, 100): [(0, 10000), (10000, 17500)],
-    (3.5, 200): [(0, 8000), (8000, 12000)],
-    (3.5, 400): [(0, 8000), (8000, 9000)],
-    (3.5, 600): [(0, 4000), (4000, 6000)]
-}
-
-# Load reference Excel file
-try:
     df_ref = pd.read_excel("data/all equations ei5204.xlsx", header=None)
 except FileNotFoundError:
     st.error("Reference Excel file 'data/all equations ei5204.xlsx' not found.")
@@ -80,7 +43,7 @@ def parse_name(name):
         glr_str = parts[4].replace('glr', '')
         glr = float(glr_str)
         return conduit_size, production_rate, glr
-    except (Indexnun, ValueError):
+    except (IndexError, ValueError):
         st.error(f"Failed to parse reference data name: {name}")
         return None, None, None
 
@@ -159,10 +122,9 @@ st.write(f"**Polynomial Regression (Degree 3) MAPE**: {mape:.4f}")
 
 # Calculation function
 def calculate_results(conduit_size_input, production_rate_input, glr_input, p1, D, data_ref, model, poly):
-    # Validate input parameters
     if (conduit_size_input, production_rate_input) not in INTERPOLATION_RANGES:
         st.error("Invalid conduit size or production rate.")
-        return None, None, None, None, None, None, None, None, None
+        return None, None, None, None, None, None, None, None
     valid_glr = False
     valid_range = None
     for min_glr, max_glr in INTERPOLATION_RANGES[(conduit_size_input, production_rate_input)]:
@@ -172,9 +134,7 @@ def calculate_results(conduit_size_input, production_rate_input, glr_input, p1, 
             break
     if not valid_glr:
         st.error(f"GLR {glr_input} is outside the valid interpolation ranges for conduit size {conduit_size_input} and production rate {production_rate_input}.")
-        return None, None, None, None, None, None, None, None, None
-    
-    # Check for exact GLR match in reference data
+        return None, None, None, None, None, None, None, None
     matching_row = None
     for entry in data_ref:
         if (abs(entry['conduit_size'] - conduit_size_input) < 1e-6 and
@@ -182,14 +142,11 @@ def calculate_results(conduit_size_input, production_rate_input, glr_input, p1, 
             abs(entry['glr'] - glr_input) < 1e-6):
             matching_row = entry
             break
-    
-    # Handle exact match or interpolation
     if matching_row:
         coeffs = matching_row['coefficients']
         glr1 = glr2 = glr_input
         interpolation_status = "exact"
     else:
-        # Find relevant rows for interpolation within valid GLR range
         relevant_rows = [
             entry for entry in data_ref
             if (abs(entry['conduit_size'] - conduit_size_input) < 1e-6 and
@@ -198,7 +155,7 @@ def calculate_results(conduit_size_input, production_rate_input, glr_input, p1, 
         ]
         if len(relevant_rows) < 1:
             st.error(f"No data points found for conduit size {conduit_size_input}, production rate {production_rate_input} in GLR range {valid_range}.")
-            return None, None, None, None, None, None, None, None, None
+            return None, None, None, None, None, None, None, None
         relevant_rows.sort(key=lambda x: x['glr'])
         if len(relevant_rows) == 1:
             if abs(relevant_rows[0]['glr'] - glr_input) < 1e-6:
@@ -207,9 +164,8 @@ def calculate_results(conduit_size_input, production_rate_input, glr_input, p1, 
                 interpolation_status = "exact"
             else:
                 st.error(f"Only one data point (GLR {relevant_rows[0]['glr']}) available for interpolation in range {valid_range}.")
-                return None, None, None, None, None, None, None, None, None
+                return None, None, None, None, None, None, None, None
         else:
-            # Perform linear interpolation between closest GLR values
             lower_row = None
             higher_row = None
             for entry in relevant_rows:
@@ -237,52 +193,32 @@ def calculate_results(conduit_size_input, production_rate_input, glr_input, p1, 
                     'd': lower_row['coefficients']['d'] + fraction * (higher_row['coefficients']['d'] - lower_row['coefficients']['d'])
                 }
                 interpolation_status = "interpolated"
-    
-    # Calculate y1 and y2 using polynomial equation
     def polynomial(x, coeffs):
         return coeffs['a'] * x**3 + coeffs['b'] * x**2 + coeffs['c'] * x + coeffs['d']
-    
     y1 = polynomial(p1, coeffs)
     y2 = y1 + D
-    
-    # Solve for p2 using interpolation
     def root_function(x, target_depth, coeffs):
         return polynomial(x, coeffs) - target_depth
-    
     p2_initial_guess = p1
     p2_interpolation = fsolve(root_function, p2_initial_guess, args=(y2, coeffs))[0]
-    
-    # Machine learning prediction
     arr = pd.DataFrame([[p1, D, conduit_size_input, production_rate_input, glr_input]], 
                        columns=["p1", "D", "conduit_size", "production_rate", "GLR"])
     arr_poly = poly.transform(arr)
     pred = model.predict(arr_poly)
     y2_ml = float(pred[0][0])
     p2_ml = float(pred[0][1])
-    
-    # Calculate error
     error = abs((p2_ml - p2_interpolation) / p2_interpolation) * 100 if p2_interpolation != 0 else float('inf')
-    
     return y1, y2, p2_interpolation, y2_ml, p2_ml, error, glr1, glr2, coeffs, interpolation_status
 
 # Plotting function
-def plot_results(p1, y1, y2, p2_interpolation, D, coeffs, interpolation_status):
-    # Create figure for pressure vs depth plot
+def plot_results(p1, y1, y2, p2_interpolation, D, coeffs, glr_input, interpolation_status):
     fig, ax = plt.subplots(figsize=(10, 6))
-    
-    # Define polynomial function for plotting
+    p1_full = np.linspace(0, 4000, 100)
     def polynomial(x, coeffs):
         return coeffs['a'] * x**3 + coeffs['b'] * x**2 + coeffs['c'] * x + coeffs['d']
-    
-    # Generate points for GLR curve using coefficients (exact or interpolated)
-    p1_full = np.linspace(0, 4000, 100)
     y1_full = [polynomial(p, coeffs) for p in p1_full]
-    
-    # Plot GLR curve with label indicating exact or interpolated coefficients
-    label = 'GLR curve (interpolated)' if interpolation_status == "interpolated" else 'GLR curve (exact)'
+    label = f'GLR curve ({"Interpolated" if interpolation_status == "interpolated" else "Exact"} GLR {glr_input})'
     ax.plot(p1_full, y1_full, color='blue', linewidth=2.5, label=label)
-    
-    # Plot data points and connecting lines
     ax.scatter([p1], [y1], color='blue', s=50, label=f'(p1, y1) = ({p1:.2f} psi, {y1:.2f} ft)')
     ax.scatter([p2_interpolation], [y2], color='blue', s=50, label=f'(p2, y2) = ({p2_interpolation:.2f} psi, {y2:.2f} ft)')
     ax.plot([p1, p1], [y1, 0], color='red', linewidth=1, label='Connecting Line')
@@ -290,8 +226,6 @@ def plot_results(p1, y1, y2, p2_interpolation, D, coeffs, interpolation_status):
     ax.plot([p2_interpolation, p2_interpolation], [y2, 0], color='red', linewidth=1)
     ax.plot([p2_interpolation, 0], [y2, y2], color='red', linewidth=1)
     ax.plot([0, 0], [y1, y2], color='green', linewidth=4, label=f'Well Length ({D:.2f} ft)')
-    
-    # Configure plot
     ax.set_xlabel('Gradient Pressure, psi', fontsize=10)
     ax.set_ylabel('Depth, ft', fontsize=10)
     ax.set_xlim(0, 4000)
@@ -307,7 +241,6 @@ def plot_results(p1, y1, y2, p2_interpolation, D, coeffs, interpolation_status):
     ax.xaxis.set_label_position('top')
     ax.xaxis.set_ticks_position('top')
     ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=8, frameon=True, edgecolor='black')
-    
     return fig
 
 # Streamlit UI
@@ -325,7 +258,7 @@ with st.form("input_form"):
         D = st.number_input("Depth Offset D (ft)", min_value=0.0, value=1000.0, step=10.0)
     submit_button = st.form_submit_button("Calculate")
 
-if submits_button:
+if submit_button:
     result = calculate_results(conduit_size, production_rate, glr, p1, D, data_ref, model, poly)
     if result[0] is not None:
         y1, y2, p2_interpolation, y2_ml, p2_ml, error, glr1, glr2, coeffs, interpolation_status = result
@@ -349,5 +282,5 @@ if submits_button:
         st.subheader("Error Analysis")
         st.write(f"**Absolute Percentage Error between p2 (ML) and p2 (Interpolation)**: {error:.2f}%")
         st.subheader("Pressure vs Depth Plot")
-        fig = plot_results(p1, y1, y2, p2_interpolation, D, coeffs, interpolation_status)
+        fig = plot_results(p1, y1, y2, p2_interpolation, D, coeffs, glr, interpolation_status)
         st.pyplot(fig)
