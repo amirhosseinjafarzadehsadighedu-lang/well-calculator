@@ -5,4 +5,4 @@ scikit-learn
 matplotlib
 streamlit
 openpyxl
-tensorflow==2.17.0
+tensorflow
