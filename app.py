@@ -224,7 +224,7 @@ def plot_results(p1, y1, y2, p2, D, coeffs, glr_input, interpolation_status):
     ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=8, frameon=True, edgecolor='black')
     return fig
 
-# Neural network training and analysis
+# Neural network training
 def train_neural_network(df_ml):
     X = df_ml[["D", "GLR", "production_rate", "conduit_size"]]
     y = df_ml["pressure_gradient"]
@@ -255,12 +255,48 @@ def analyze_parameter_effects(model, scaler, df_ml):
     X = df_ml[["D", "GLR", "production_rate", "conduit_size"]]
     base_values = X.mean().to_dict()
     figs = []
-    params = ["D", "GLR", "production_rate", "conduit_size"]
-    param_labels = ["Depth Offset (ft)", "GLR", "Production Rate (stb/day)", "Conduit Size (in)"]
+    conduit_sizes = [2.875, 3.5]
+    production_rates = [50, 100, 200, 400, 600]
     
+    # Generate 10 graphs for GLR effect
+    for conduit_size in conduit_sizes:
+        for production_rate in production_rates:
+            # Use valid GLR range from INTERPOLATION_RANGES
+            glr_ranges = INTERPOLATION_RANGES.get((conduit_size, production_rate), [])
+            if not glr_ranges:
+                continue
+            # Take the widest GLR range for plotting
+            glr_min = min([r[0] for r in glr_ranges])
+            glr_max = max([r[1] for r in glr_ranges])
+            glr_values = np.linspace(glr_min, glr_max, 100)
+            
+            X_test = pd.DataFrame([base_values] * 100)
+            X_test['GLR'] = glr_values
+            X_test['production_rate'] = production_rate
+            X_test['conduit_size'] = conduit_size
+            X_test_scaled = scaler.transform(X_test)
+            predictions = model.predict(X_test_scaled, verbose=0)
+            
+            fig, ax = plt.subplots(figsize=(8, 5))
+            ax.plot(glr_values, predictions, label=f'GLR Effect (Conduit: {conduit_size} in, Prod: {production_rate} stb/day)')
+            ax.set_xlabel('GLR')
+            ax.set_ylabel('Pressure Gradient (p2 - p1, psi)')
+            ax.set_title(f'Effect of GLR (Conduit: {conduit_size} in, Production: {production_rate} stb/day)')
+            ax.grid(True)
+            ax.legend()
+            figs.append(fig)
+    
+    # Plot effects of other parameters (D, production_rate, conduit_size)
+    params = ["D", "production_rate", "conduit_size"]
+    param_labels = ["Depth Offset (ft)", "Production Rate (stb/day)", "Conduit Size (in)"]
     for param, label in zip(params, param_labels):
-        values = np.linspace(X[param].min(), X[param].max(), 100)
-        X_test = pd.DataFrame([base_values] * 100)
+        if param == "conduit_size":
+            values = [2.875, 3.5]  # Restrict to discrete values
+        else:
+            values = np.linspace(X[param].min(), X[param].max(), 100 if param != "production_rate" else 5)
+            if param == "production_rate":
+                values = [50, 100, 200, 400, 600]  # Restrict to discrete production rates
+        X_test = pd.DataFrame([base_values] * len(values))
         X_test[param] = values
         X_test_scaled = scaler.transform(X_test)
         predictions = model.predict(X_test_scaled, verbose=0)
@@ -323,6 +359,12 @@ else:
         st.write("Training complete. Generating plots...")
         figs = analyze_parameter_effects(model, scaler, df_ml)
         st.subheader("Parameter Effects on Pressure Gradient")
-        for fig, param in zip(figs, ["D", "GLR", "production_rate", "conduit_size"]):
-            st.write(f"**Effect of {param}**")
+        for i, fig in enumerate(figs):
+            if i < 10:
+                conduit_size = [2.875, 3.5][i // 5]
+                production_rate = [50, 100, 200, 400, 600][i % 5]
+                st.write(f"**Effect of GLR (Conduit: {conduit_size} in, Production: {production_rate} stb/day)**")
+            else:
+                param = ["D", "production_rate", "conduit_size"][i - 10]
+                st.write(f"**Effect of {param}**")
             st.pyplot(fig)
