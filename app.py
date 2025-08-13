@@ -1,14 +1,15 @@
 import pandas as pd
 import numpy as np
 from scipy.optimize import fsolve
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import PolynomialFeatures
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_absolute_percentage_error
 import matplotlib.pyplot as plt
 import streamlit as st
 import os
 import re
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense
+from sklearn.preprocessing import StandardScaler
+import time
 
 # Streamlit page configuration
 st.set_page_config(page_title="Well Pressure and Depth Calculator", layout="wide")
@@ -67,7 +68,7 @@ for index, row in df_ref.iterrows():
         'coefficients': coefficients
     })
 
-# Dynamically load all .xlsx files from data/ folder, excluding reference file
+# Load data for neural network
 data_files = [
     f"data/{f}" for f in os.listdir("data")
     if f.endswith(".xlsx") and f != "all equations ei5204.xlsx"
@@ -105,26 +106,13 @@ if not dfs_ml:
     st.error("No valid machine learning Excel files were loaded. Please ensure data files are in the 'data/' folder.")
     st.stop()
 df_ml = pd.concat(dfs_ml, ignore_index=True)
+df_ml['pressure_gradient'] = df_ml['p2'] - df_ml['p1']
 
-# Features & targets for ML
-X = df_ml[["p1", "D", "conduit_size", "production_rate", "GLR"]]
-y = df_ml[["y2", "p2"]]
-poly = PolynomialFeatures(degree=3, include_bias=False)
-X_poly = poly.fit_transform(X)
-X_train, X_test, y_train, y_test = train_test_split(X_poly, y, test_size=0.2, random_state=42)
-
-# Train polynomial regression model
-model = LinearRegression()
-model.fit(X_train, y_train)
-y_pred = model.predict(X_test)
-mape = mean_absolute_percentage_error(y_test, y_pred)
-st.write(f"**Polynomial Regression (Degree 3) MAPE**: {mape:.4f}")
-
-# Calculation function
-def calculate_results(conduit_size_input, production_rate_input, glr_input, p1, D, data_ref, model, poly):
+# Polynomial calculation function
+def calculate_results(conduit_size_input, production_rate_input, glr_input, p1, D, data_ref):
     if (conduit_size_input, production_rate_input) not in INTERPOLATION_RANGES:
         st.error("Invalid conduit size or production rate.")
-        return None, None, None, None, None, None, None, None
+        return None, None, None, None, None
     valid_glr = False
     valid_range = None
     for min_glr, max_glr in INTERPOLATION_RANGES[(conduit_size_input, production_rate_input)]:
@@ -134,7 +122,7 @@ def calculate_results(conduit_size_input, production_rate_input, glr_input, p1, 
             break
     if not valid_glr:
         st.error(f"GLR {glr_input} is outside the valid interpolation ranges for conduit size {conduit_size_input} and production rate {production_rate_input}.")
-        return None, None, None, None, None, None, None, None
+        return None, None, None, None, None
     matching_row = None
     for entry in data_ref:
         if (abs(entry['conduit_size'] - conduit_size_input) < 1e-6 and
@@ -155,7 +143,7 @@ def calculate_results(conduit_size_input, production_rate_input, glr_input, p1, 
         ]
         if len(relevant_rows) < 1:
             st.error(f"No data points found for conduit size {conduit_size_input}, production rate {production_rate_input} in GLR range {valid_range}.")
-            return None, None, None, None, None, None, None, None
+            return None, None, None, None, None
         relevant_rows.sort(key=lambda x: x['glr'])
         if len(relevant_rows) == 1:
             if abs(relevant_rows[0]['glr'] - glr_input) < 1e-6:
@@ -164,7 +152,7 @@ def calculate_results(conduit_size_input, production_rate_input, glr_input, p1, 
                 interpolation_status = "exact"
             else:
                 st.error(f"Only one data point (GLR {relevant_rows[0]['glr']}) available for interpolation in range {valid_range}.")
-                return None, None, None, None, None, None, None, None
+                return None, None, None, None, None
         else:
             lower_row = None
             higher_row = None
@@ -200,18 +188,11 @@ def calculate_results(conduit_size_input, production_rate_input, glr_input, p1, 
     def root_function(x, target_depth, coeffs):
         return polynomial(x, coeffs) - target_depth
     p2_initial_guess = p1
-    p2_interpolation = fsolve(root_function, p2_initial_guess, args=(y2, coeffs))[0]
-    arr = pd.DataFrame([[p1, D, conduit_size_input, production_rate_input, glr_input]], 
-                       columns=["p1", "D", "conduit_size", "production_rate", "GLR"])
-    arr_poly = poly.transform(arr)
-    pred = model.predict(arr_poly)
-    y2_ml = float(pred[0][0])
-    p2_ml = float(pred[0][1])
-    error = abs((p2_ml - p2_interpolation) / p2_interpolation) * 100 if p2_interpolation != 0 else float('inf')
-    return y1, y2, p2_interpolation, y2_ml, p2_ml, error, glr1, glr2, coeffs, interpolation_status
+    p2 = fsolve(root_function, p2_initial_guess, args=(y2, coeffs))[0]
+    return y1, y2, p2, coeffs, interpolation_status
 
-# Plotting function
-def plot_results(p1, y1, y2, p2_interpolation, D, coeffs, glr_input, interpolation_status):
+# Plotting function for polynomial results
+def plot_results(p1, y1, y2, p2, D, coeffs, glr_input, interpolation_status):
     fig, ax = plt.subplots(figsize=(10, 6))
     p1_full = np.linspace(0, 4000, 100)
     def polynomial(x, coeffs):
@@ -220,11 +201,11 @@ def plot_results(p1, y1, y2, p2_interpolation, D, coeffs, glr_input, interpolati
     label = f'GLR curve ({"Interpolated" if interpolation_status == "interpolated" else "Exact"} GLR {glr_input})'
     ax.plot(p1_full, y1_full, color='blue', linewidth=2.5, label=label)
     ax.scatter([p1], [y1], color='blue', s=50, label=f'(p1, y1) = ({p1:.2f} psi, {y1:.2f} ft)')
-    ax.scatter([p2_interpolation], [y2], color='blue', s=50, label=f'(p2, y2) = ({p2_interpolation:.2f} psi, {y2:.2f} ft)')
+    ax.scatter([p2], [y2], color='blue', s=50, label=f'(p2, y2) = ({p2:.2f} psi, {y2:.2f} ft)')
     ax.plot([p1, p1], [y1, 0], color='red', linewidth=1, label='Connecting Line')
     ax.plot([p1, 0], [y1, y1], color='red', linewidth=1)
-    ax.plot([p2_interpolation, p2_interpolation], [y2, 0], color='red', linewidth=1)
-    ax.plot([p2_interpolation, 0], [y2, y2], color='red', linewidth=1)
+    ax.plot([p2, p2], [y2, 0], color='red', linewidth=1)
+    ax.plot([p2, 0], [y2, y2], color='red', linewidth=1)
     ax.plot([0, 0], [y1, y2], color='green', linewidth=4, label=f'Well Length ({D:.2f} ft)')
     ax.set_xlabel('Gradient Pressure, psi', fontsize=10)
     ax.set_ylabel('Depth, ft', fontsize=10)
@@ -243,44 +224,105 @@ def plot_results(p1, y1, y2, p2_interpolation, D, coeffs, glr_input, interpolati
     ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=8, frameon=True, edgecolor='black')
     return fig
 
+# Neural network training and analysis
+def train_neural_network(df_ml):
+    X = df_ml[["D", "GLR", "production_rate", "conduit_size"]]
+    y = df_ml["pressure_gradient"]
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X)
+    
+    model = Sequential([
+        Dense(64, activation='relu', input_shape=(X_scaled.shape[1],)),
+        Dense(32, activation='relu'),
+        Dense(1)
+    ])
+    model.compile(optimizer='adam', loss='mse')
+    
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    for epoch in range(100):
+        model.fit(X_scaled, y, epochs=1, batch_size=32, verbose=0)
+        progress = (epoch + 1) / 100
+        progress_bar.progress(progress)
+        status_text.text(f"Training Neural Network: {int(progress * 100)}%")
+        time.sleep(0.1)  # Simulate training time
+    progress_bar.empty()
+    status_text.empty()
+    return model, scaler
+
+# Analyze parameter effects
+def analyze_parameter_effects(model, scaler, df_ml):
+    X = df_ml[["D", "GLR", "production_rate", "conduit_size"]]
+    base_values = X.mean().to_dict()
+    figs = []
+    params = ["D", "GLR", "production_rate", "conduit_size"]
+    param_labels = ["Depth Offset (ft)", "GLR", "Production Rate (stb/day)", "Conduit Size (in)"]
+    
+    for param, label in zip(params, param_labels):
+        values = np.linspace(X[param].min(), X[param].max(), 100)
+        X_test = pd.DataFrame([base_values] * 100)
+        X_test[param] = values
+        X_test_scaled = scaler.transform(X_test)
+        predictions = model.predict(X_test_scaled, verbose=0)
+        
+        fig, ax = plt.subplots(figsize=(8, 5))
+        ax.plot(values, predictions, label=f'Effect of {param}')
+        ax.set_xlabel(label)
+        ax.set_ylabel('Pressure Gradient (p2 - p1, psi)')
+        ax.set_title(f'Effect of {param} on Pressure Gradient')
+        ax.grid(True)
+        ax.legend()
+        figs.append(fig)
+    
+    return figs
+
 # Streamlit UI
 st.title("Well Pressure and Depth Calculator")
-st.write("Enter the parameters to calculate pressure and depth values.")
+mode = st.selectbox("Select Mode", ["Polynomial Calculation", "Neural Network Analysis"])
 
-with st.form("input_form"):
-    col1, col2 = st.columns(2)
-    with col1:
-        conduit_size = st.selectbox("Conduit Size", [2.875, 3.5])
-        production_rate = st.selectbox("Production Rate (stb/day)", [50, 100, 200, 400, 600])
-        glr = st.number_input("GLR", min_value=0.0, value=200.0, step=10.0)
-    with col2:
-        p1 = st.number_input("Pressure p1 (psi)", min_value=0.0, value=1000.0, step=10.0)
-        D = st.number_input("Depth Offset D (ft)", min_value=0.0, value=1000.0, step=10.0)
-    submit_button = st.form_submit_button("Calculate")
+if mode == "Polynomial Calculation":
+    st.write("Enter parameters to calculate pressure and depth values using polynomial formulas.")
+    with st.form("input_form"):
+        col1, col2 = st.columns(2)
+        with col1:
+            conduit_size = st.selectbox("Conduit Size", [2.875, 3.5])
+            production_rate = st.selectbox("Production Rate (stb/day)", [50, 100, 200, 400, 600])
+            glr = st.number_input("GLR", min_value=0.0, value=200.0, step=10.0)
+        with col2:
+            p1 = st.number_input("Pressure p1 (psi)", min_value=0.0, value=1000.0, step=10.0)
+            D = st.number_input("Depth Offset D (ft)", min_value=0.0, value=1000.0, step=10.0)
+        submit_button = st.form_submit_button("Calculate")
+    
+    if submit_button:
+        result = calculate_results(conduit_size, production_rate, glr, p1, D, data_ref)
+        if result[0] is not None:
+            y1, y2, p2, coeffs, interpolation_status = result
+            st.subheader("Results")
+            st.write(f"**Conduit Size**: {conduit_size}")
+            st.write(f"**Production Rate**: {production_rate} stb/day")
+            st.write(f"**GLR**: {glr}")
+            st.write(f"**Pressure p1**: {p1} psi")
+            st.write(f"**Depth Offset D**: {D} ft")
+            st.subheader("Polynomial Results")
+            if interpolation_status == "exact":
+                st.write("Using exact polynomial coefficients from data.")
+            else:
+                st.write(f"Interpolated polynomial coefficients between GLR {glr1} and {glr2}.")
+            st.write(f"**Depth y1 at p1**: {y1:.2f} ft")
+            st.write(f"**Target Depth y2**: {y2:.2f} ft")
+            st.write(f"**Pressure p2**: {p2:.2f} psi")
+            st.subheader("Pressure vs Depth Plot")
+            fig = plot_results(p1, y1, y2, p2, D, coeffs, glr, interpolation_status)
+            st.pyplot(fig)
 
-if submit_button:
-    result = calculate_results(conduit_size, production_rate, glr, p1, D, data_ref, model, poly)
-    if result[0] is not None:
-        y1, y2, p2_interpolation, y2_ml, p2_ml, error, glr1, glr2, coeffs, interpolation_status = result
-        st.subheader("Results")
-        st.write(f"**Conduit Size**: {conduit_size}")
-        st.write(f"**Production Rate**: {production_rate} stb/day")
-        st.write(f"**GLR**: {glr}")
-        st.write(f"**Pressure p1**: {p1} psi")
-        st.write(f"**Depth Offset D**: {D} ft")
-        st.subheader("Interpolation (Polynomial) Results")
-        if interpolation_status == "exact":
-            st.write("Using exact polynomial coefficients from data.")
-        else:
-            st.write(f"Interpolated polynomial coefficients between GLR {glr1} and {glr2}.")
-        st.write(f"**Depth y1 at p1**: {y1:.2f} ft")
-        st.write(f"**Target Depth y2**: {y2:.2f} ft")
-        st.write(f"**Pressure p2 (Interpolation)**: {p2_interpolation:.2f} psi")
-        st.subheader("Machine Learning (Polynomial Regression) Results")
-        st.write(f"**Predicted y2**: {y2_ml:.2f} ft")
-        st.write(f"**Predicted p2 (ML)**: {p2_ml:.2f} psi")
-        st.subheader("Error Analysis")
-        st.write(f"**Absolute Percentage Error between p2 (ML) and p2 (Interpolation)**: {error:.2f}%")
-        st.subheader("Pressure vs Depth Plot")
-        fig = plot_results(p1, y1, y2, p2_interpolation, D, coeffs, glr, interpolation_status)
-        st.pyplot(fig)
+else:
+    st.write("Analyzing the effects of parameters on pressure gradient (p2 - p1) using a neural network.")
+    if st.button("Run Neural Network Analysis"):
+        st.write("Training neural network...")
+        model, scaler = train_neural_network(df_ml)
+        st.write("Training complete. Generating plots...")
+        figs = analyze_parameter_effects(model, scaler, df_ml)
+        st.subheader("Parameter Effects on Pressure Gradient")
+        for fig, param in zip(figs, ["D", "GLR", "production_rate", "conduit_size"]):
+            st.write(f"**Effect of {param}**")
+            st.pyplot(fig)
