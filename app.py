@@ -22,14 +22,14 @@ st.set_page_config(page_title="Well Pressure and Depth Calculator", layout="wide
 
 # Create data directory if it doesn't exist
 DATA_DIR = "data"
-if not os.path.exists(DATA_DIR):
-    try:
+try:
+    if not os.path.exists(DATA_DIR):
         os.makedirs(DATA_DIR)
         logging.info(f"Created directory: {DATA_DIR}")
-    except Exception as e:
-        st.error(f"Failed to create data directory: {str(e)}")
-        logging.error(f"Failed to create data directory: {str(e)}")
-        st.stop()
+except Exception as e:
+    st.error(f"Failed to create data directory: {str(e)}")
+    logging.error(f"Failed to create data directory: {str(e)}")
+    st.stop()
 
 # Interpolation ranges
 INTERPOLATION_RANGES = {
@@ -72,19 +72,28 @@ def load_reference_data(reference_file_path):
             conduit_size, production_rate, glr = parse_name(name)
             if conduit_size is None:
                 continue
-            coefficients = {
-                'a': float(row[1]),
-                'b': float(row[2]),
-                'c': float(row[3]),
-                'd': float(row[4]),
-                'e': float(row[5])
-            }
-            data_ref.append({
-                'conduit_size': conduit_size,
-                'production_rate': production_rate,
-                'glr': glr,
-                'coefficients': coefficients
-            })
+            try:
+                coefficients = {
+                    'a': float(row[1]),
+                    'b': float(row[2]),
+                    'c': float(row[3]),
+                    'd': float(row[4]),
+                    'e': float(row[5])
+                }
+                data_ref.append({
+                    'conduit_size': conduit_size,
+                    'production_rate': production_rate,
+                    'glr': glr,
+                    'coefficients': coefficients
+                })
+            except (IndexError, ValueError) as e:
+                st.warning(f"Invalid coefficients in row {index+1} of reference file: {str(e)}")
+                logging.warning(f"Invalid coefficients in row {index+1}: {str(e)}")
+                continue
+        if not data_ref:
+            st.error("No valid data entries found in reference Excel file.")
+            logging.error("No valid data entries in reference file")
+            st.stop()
         logging.info(f"Loaded {len(data_ref)} entries from reference file")
         return data_ref
     except FileNotFoundError:
@@ -126,6 +135,10 @@ def load_ml_data(data_dir):
                     break
             else:
                 df_temp = df_temp[required_cols].dropna()
+                if df_temp.empty:
+                    st.warning(f"No valid data in '{file_name}' after dropping NA values. Skipping.")
+                    logging.warning(f"No valid data in '{file_name}' after dropping NA")
+                    continue
                 df_temp['conduit_size'] = conduit_size
                 df_temp['production_rate'] = production_rate
                 df_temp['GLR'] = glr
@@ -227,79 +240,37 @@ def calculate_results(conduit_size_input, production_rate_input, glr_input, p1, 
                 interpolation_status = "interpolated"
     def polynomial(x, coeffs):
         return coeffs['a'] * x**5 + coeffs['b'] * x**4 + coeffs['c'] * x**3 + coeffs['d'] * x**2 + coeffs['e'] * x
-    y1 = polynomial(p1, coeffs)
-    y2 = y1 + D
-    def root_function(x, target_depth, coeffs):
-        return polynomial(x, coeffs) - target_depth
-    p2_initial_guess = p1
-    p2 = fsolve(root_function, p2_initial_guess, args=(y2, coeffs))[0]
-    logging.info(f"Calculated results: y1={y1:.2f}, y2={y2:.2f}, p2={p2:.2f}, interpolation={interpolation_status}")
-    return y1, y2, p2, coeffs, interpolation_status
+    try:
+        y1 = polynomial(p1, coeffs)
+        y2 = y1 + D
+        def root_function(x, target_depth, coeffs):
+            return polynomial(x, coeffs) - target_depth
+        p2_initial_guess = p1
+        p2 = fsolve(root_function, p2_initial_guess, args=(y2, coeffs))[0]
+        logging.info(f"Calculated results: y1={y1:.2f}, y2={y2:.2f}, p2={p2:.2f}, interpolation={interpolation_status}")
+        return y1, y2, p2, coeffs, interpolation_status
+    except Exception as e:
+        st.error(f"Error in polynomial calculation: {str(e)}")
+        logging.error(f"Polynomial calculation error: {str(e)}")
+        return None, None, None, None, None
 
 # Plotting function for polynomial results
 def plot_results(p1, y1, y2, p2, D, coeffs, glr_input, interpolation_status):
-    fig, ax = plt.subplots(figsize=(10, 6))
-    p1_full = np.linspace(0, 4000, 100)
-    def polynomial(x, coeffs):
-        return coeffs['a'] * x**5 + coeffs['b'] * x**4 + coeffs['c'] * x**3 + coeffs['d'] * x**2 + coeffs['e'] * x
-    y1_full = [polynomial(p, coeffs) for p in p1_full]
-    label = f'GLR curve ({"Interpolated" if interpolation_status == "interpolated" else "Exact"} GLR {glr_input})'
-    ax.plot(p1_full, y1_full, color='blue', linewidth=2.5, label=label)
-    ax.scatter([p1], [y1], color='blue', s=50, label=f'(p1, y1) = ({p1:.2f} psi, {y1:.2f} ft)')
-    ax.scatter([p2], [y2], color='blue', s=50, label=f'(p2, y2) = ({p2:.2f} psi, {y2:.2f} ft)')
-    ax.plot([p1, p1], [y1, 0], color='red', linewidth=1, label='Connecting Line')
-    ax.plot([p1, 0], [y1, y1], color='red', linewidth=1)
-    ax.plot([p2, p2], [y2, 0], color='red', linewidth=1)
-    ax.plot([p2, 0], [y2, y2], color='red', linewidth=1)
-    ax.plot([0, 0], [y1, y2], color='green', linewidth=4, label=f'Well Length ({D:.2f} ft)')
-    ax.set_xlabel('Gradient Pressure, psi', fontsize=10)
-    ax.set_ylabel('Depth, ft', fontsize=10)
-    ax.set_xlim(0, 4000)
-    ax.set_ylim(0, 31000)
-    ax.invert_yaxis()
-    ax.grid(True, which='major', color='#D3D3D3')
-    ax.grid(True, which='minor', color='#D3D3D3', linestyle='-', alpha=0.5)
-    ax.xaxis.set_major_locator(plt.MultipleLocator(1000))
-    ax.xaxis.set_minor_locator(plt.MultipleLocator(200))
-    ax.yaxis.set_major_locator(plt.MultipleLocator(1000))
-    ax.yaxis.set_minor_locator(plt.MultipleLocator(200))
-    ax.xaxis.set_label_position('top')
-    ax.xaxis.set_ticks_position('top')
-    ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=8, frameon=True, edgecolor='black')
-    logging.info("Generated polynomial plot")
-    return fig
-
-# Function to plot GLR graphs with progress bar
-def plot_glr_graphs(data_ref):
-    conduit_sizes = [2.875, 3.5]
-    production_rates = [50, 100, 200, 400, 600]
-    colors = ['blue', 'red', 'green', 'purple', 'orange', 'cyan', 'magenta', 'brown', 'pink', 'lime']
-    figs = []
-    total_graphs = len(conduit_sizes) * len(production_rates)  # 10 graphs
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    for i, (conduit_size, production_rate) in enumerate([(cs, pr) for cs in conduit_sizes for pr in production_rates]):
-        status_text.text(f"Generating GLR graph {i+1}/{total_graphs} (Conduit: {conduit_size} in, Production: {production_rate} stb/day)")
+    try:
         fig, ax = plt.subplots(figsize=(10, 6))
-        relevant_rows = [
-            entry for entry in data_ref
-            if (abs(entry['conduit_size'] - conduit_size) < 1e-6 and
-                abs(entry['production_rate'] - production_rate) < 1e-6)
-        ]
-        relevant_rows.sort(key=lambda x: x['glr'])
         p1_full = np.linspace(0, 4000, 100)
-        
-        for idx, entry in enumerate(relevant_rows):
-            coeffs = entry['coefficients']
-            glr = entry['glr']
-            def polynomial(x, coeffs):
-                return coeffs['a'] * x**5 + coeffs['b'] * x**4 + coeffs['c'] * x**3 + coeffs['d'] * x**2 + coeffs['e'] * x
-            y1_full = [polynomial(p, coeffs) for p in p1_full]
-            ax.plot(p1_full, y1_full, color=colors[idx % len(colors)], linewidth=2.5, label=f'GLR {glr}')
-            ax.text(p1_full[-1], y1_full[-1], f'{glr}', fontsize=8, color=colors[idx % len(colors)], 
-                    verticalalignment='bottom', horizontalalignment='left')
-        
+        def polynomial(x, coeffs):
+            return coeffs['a'] * x**5 + coeffs['b'] * x**4 + coeffs['c'] * x**3 + coeffs['d'] * x**2 + coeffs['e'] * x
+        y1_full = [polynomial(p, coeffs) for p in p1_full]
+        label = f'GLR curve ({"Interpolated" if interpolation_status == "interpolated" else "Exact"} GLR {glr_input})'
+        ax.plot(p1_full, y1_full, color='blue', linewidth=2.5, label=label)
+        ax.scatter([p1], [y1], color='blue', s=50, label=f'(p1, y1) = ({p1:.2f} psi, {y1:.2f} ft)')
+        ax.scatter([p2], [y2], color='blue', s=50, label=f'(p2, y2) = ({p2:.2f} psi, {y2:.2f} ft)')
+        ax.plot([p1, p1], [y1, 0], color='red', linewidth=1, label='Connecting Line')
+        ax.plot([p1, 0], [y1, y1], color='red', linewidth=1)
+        ax.plot([p2, p2], [y2, 0], color='red', linewidth=1)
+        ax.plot([p2, 0], [y2, y2], color='red', linewidth=1)
+        ax.plot([0, 0], [y1, y2], color='green', linewidth=4, label=f'Well Length ({D:.2f} ft)')
         ax.set_xlabel('Gradient Pressure, psi', fontsize=10)
         ax.set_ylabel('Depth, ft', fontsize=10)
         ax.set_xlim(0, 4000)
@@ -314,104 +285,171 @@ def plot_glr_graphs(data_ref):
         ax.xaxis.set_label_position('top')
         ax.xaxis.set_ticks_position('top')
         ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=8, frameon=True, edgecolor='black')
-        ax.set_title(f'GLR Curves (Conduit: {conduit_size} in, Production: {production_rate} stb/day)')
-        figs.append(fig)
-        logging.info(f"Generated GLR graph {i+1}/{total_graphs}")
+        logging.info("Generated polynomial plot")
+        return fig
+    except Exception as e:
+        st.error(f"Error generating plot: {str(e)}")
+        logging.error(f"Plot generation error: {str(e)}")
+        return None
+
+# Function to plot GLR graphs with progress bar
+def plot_glr_graphs(data_ref):
+    try:
+        conduit_sizes = [2.875, 3.5]
+        production_rates = [50, 100, 200, 400, 600]
+        colors = ['blue', 'red', 'green', 'purple', 'orange', 'cyan', 'magenta', 'brown', 'pink', 'lime']
+        figs = []
+        total_graphs = len(conduit_sizes) * len(production_rates)  # 10 graphs
+        progress_bar = st.progress(0)
+        status_text = st.empty()
         
-        # Update progress bar
-        progress = (i + 1) / total_graphs
-        progress_bar.progress(progress)
-    
-    progress_bar.empty()
-    status_text.empty()
-    logging.info("Completed GLR graph generation")
-    return figs
+        for i, (conduit_size, production_rate) in enumerate([(cs, pr) for cs in conduit_sizes for pr in production_rates]):
+            status_text.text(f"Generating GLR graph {i+1}/{total_graphs} (Conduit: {conduit_size} in, Production: {production_rate} stb/day)")
+            fig, ax = plt.subplots(figsize=(10, 6))
+            relevant_rows = [
+                entry for entry in data_ref
+                if (abs(entry['conduit_size'] - conduit_size) < 1e-6 and
+                    abs(entry['production_rate'] - production_rate) < 1e-6)
+            ]
+            relevant_rows.sort(key=lambda x: x['glr'])
+            p1_full = np.linspace(0, 4000, 100)
+            
+            for idx, entry in enumerate(relevant_rows):
+                coeffs = entry['coefficients']
+                glr = entry['glr']
+                def polynomial(x, coeffs):
+                    return coeffs['a'] * x**5 + coeffs['b'] * x**4 + coeffs['c'] * x**3 + coeffs['d'] * x**2 + coeffs['e'] * x
+                y1_full = [polynomial(p, coeffs) for p in p1_full]
+                ax.plot(p1_full, y1_full, color=colors[idx % len(colors)], linewidth=2.5, label=f'GLR {glr}')
+                ax.text(p1_full[-1], y1_full[-1], f'{glr}', fontsize=8, color=colors[idx % len(colors)], 
+                        verticalalignment='bottom', horizontalalignment='left')
+            
+            ax.set_xlabel('Gradient Pressure, psi', fontsize=10)
+            ax.set_ylabel('Depth, ft', fontsize=10)
+            ax.set_xlim(0, 4000)
+            ax.set_ylim(0, 31000)
+            ax.invert_yaxis()
+            ax.grid(True, which='major', color='#D3D3D3')
+            ax.grid(True, which='minor', color='#D3D3D3', linestyle='-', alpha=0.5)
+            ax.xaxis.set_major_locator(plt.MultipleLocator(1000))
+            ax.xaxis.set_minor_locator(plt.MultipleLocator(200))
+            ax.yaxis.set_major_locator(plt.MultipleLocator(1000))
+            ax.yaxis.set_minor_locator(plt.MultipleLocator(200))
+            ax.xaxis.set_label_position('top')
+            ax.xaxis.set_ticks_position('top')
+            ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=8, frameon=True, edgecolor='black')
+            ax.set_title(f'GLR Curves (Conduit: {conduit_size} in, Production: {production_rate} stb/day)')
+            figs.append(fig)
+            logging.info(f"Generated GLR graph {i+1}/{total_graphs}")
+            
+            # Update progress bar
+            progress = (i + 1) / total_graphs
+            progress_bar.progress(progress)
+        
+        progress_bar.empty()
+        status_text.empty()
+        logging.info("Completed GLR graph generation")
+        return figs
+    except Exception as e:
+        st.error(f"Error generating GLR graphs: {str(e)}")
+        logging.error(f"GLR graph generation error: {str(e)}")
+        return []
 
 # Neural network training
 def train_neural_network(df_ml):
-    X = df_ml[["D", "GLR", "production_rate", "conduit_size"]]
-    y = df_ml["pressure_gradient"]
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X)
-    
-    model = Sequential([
-        Dense(64, activation='relu', input_shape=(X_scaled.shape[1],)),
-        Dense(32, activation='relu'),
-        Dense(1)
-    ])
-    model.compile(optimizer='adam', loss='mse')
-    
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    for epoch in range(100):
-        model.fit(X_scaled, y, epochs=1, batch_size=32, verbose=0)
-        progress = (epoch + 1) / 100
-        progress_bar.progress(progress)
-        status_text.text(f"Training Neural Network: {int(progress * 100)}%")
-        time.sleep(0.1)  # Simulate training time
-    progress_bar.empty()
-    status_text.empty()
-    logging.info("Completed neural network training")
-    return model, scaler
+    try:
+        X = df_ml[["D", "GLR", "production_rate", "conduit_size"]]
+        y = df_ml["pressure_gradient"]
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+        
+        model = Sequential([
+            Dense(64, activation='relu', input_shape=(X_scaled.shape[1],)),
+            Dense(32, activation='relu'),
+            Dense(1)
+        ])
+        model.compile(optimizer='adam', loss='mse')
+        
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        for epoch in range(100):
+            model.fit(X_scaled, y, epochs=1, batch_size=32, verbose=0)
+            progress = (epoch + 1) / 100
+            progress_bar.progress(progress)
+            status_text.text(f"Training Neural Network: {int(progress * 100)}%")
+            time.sleep(0.1)  # Simulate training time
+        progress_bar.empty()
+        status_text.empty()
+        logging.info("Completed neural network training")
+        return model, scaler
+    except Exception as e:
+        st.error(f"Error training neural network: {str(e)}")
+        logging.error(f"Neural network training error: {str(e)}")
+        return None, None
 
 # Analyze parameter effects
 def analyze_parameter_effects(model, scaler, df_ml):
-    X = df_ml[["D", "GLR", "production_rate", "conduit_size"]]
-    base_values = X.mean().to_dict()
-    figs = []
-    conduit_sizes = [2.875, 3.5]
-    production_rates = [50, 100, 200, 400, 600]
-    
-    for conduit_size in conduit_sizes:
-        for production_rate in production_rates:
-            glr_ranges = INTERPOLATION_RANGES.get((conduit_size, production_rate), [])
-            if not glr_ranges:
-                continue
-            glr_min = min([r[0] for r in glr_ranges])
-            glr_max = max([r[1] for r in glr_ranges])
-            glr_values = np.linspace(glr_min, glr_max, 100)
-            
-            X_test = pd.DataFrame([base_values] * 100)
-            X_test['GLR'] = glr_values
-            X_test['production_rate'] = production_rate
-            X_test['conduit_size'] = conduit_size
+    try:
+        X = df_ml[["D", "GLR", "production_rate", "conduit_size"]]
+        base_values = X.mean().to_dict()
+        figs = []
+        conduit_sizes = [2.875, 3.5]
+        production_rates = [50, 100, 200, 400, 600]
+        
+        for conduit_size in conduit_sizes:
+            for production_rate in production_rates:
+                glr_ranges = INTERPOLATION_RANGES.get((conduit_size, production_rate), [])
+                if not glr_ranges:
+                    continue
+                glr_min = min([r[0] for r in glr_ranges])
+                glr_max = max([r[1] for r in glr_ranges])
+                glr_values = np.linspace(glr_min, glr_max, 100)
+                
+                X_test = pd.DataFrame([base_values] * 100)
+                X_test['GLR'] = glr_values
+                X_test['production_rate'] = production_rate
+                X_test['conduit_size'] = conduit_size
+                X_test_scaled = scaler.transform(X_test)
+                predictions = model.predict(X_test_scaled, verbose=0)
+                
+                fig, ax = plt.subplots(figsize=(8, 5))
+                ax.plot(glr_values, predictions, label=f'GLR Effect (Conduit: {conduit_size} in, Prod: {production_rate} stb/day)')
+                ax.set_xlabel('GLR')
+                ax.set_ylabel('Pressure Gradient (p2 - p1, psi)')
+                ax.set_title(f'Effect of GLR (Conduit: {conduit_size} in, Production: {production_rate} stb/day)')
+                ax.grid(True)
+                ax.legend()
+                figs.append(fig)
+        
+        params = ["D", "production_rate", "conduit_size"]
+        param_labels = ["Depth Offset (ft)", "Production Rate (stb/day)", "Conduit Size (in)"]
+        for param, label in zip(params, param_labels):
+            if param == "conduit_size":
+                values = [2.875, 3.5]
+            else:
+                values = np.linspace(X[param].min(), X[param].max(), 100 if param != "production_rate" else 5)
+                if param == "production_rate":
+                    values = [50, 100, 200, 400, 600]
+            X_test = pd.DataFrame([base_values] * len(values))
+            X_test[param] = values
             X_test_scaled = scaler.transform(X_test)
             predictions = model.predict(X_test_scaled, verbose=0)
             
             fig, ax = plt.subplots(figsize=(8, 5))
-            ax.plot(glr_values, predictions, label=f'GLR Effect (Conduit: {conduit_size} in, Prod: {production_rate} stb/day)')
-            ax.set_xlabel('GLR')
+            ax.plot(values, predictions, label=f'Effect of {param}')
+            ax.set_xlabel(label)
             ax.set_ylabel('Pressure Gradient (p2 - p1, psi)')
-            ax.set_title(f'Effect of GLR (Conduit: {conduit_size} in, Production: {production_rate} stb/day)')
+            ax.set_title(f'Effect of {param} on Pressure Gradient')
             ax.grid(True)
             ax.legend()
             figs.append(fig)
-    
-    params = ["D", "production_rate", "conduit_size"]
-    param_labels = ["Depth Offset (ft)", "Production Rate (stb/day)", "Conduit Size (in)"]
-    for param, label in zip(params, param_labels):
-        if param == "conduit_size":
-            values = [2.875, 3.5]
-        else:
-            values = np.linspace(X[param].min(), X[param].max(), 100 if param != "production_rate" else 5)
-            if param == "production_rate":
-                values = [50, 100, 200, 400, 600]
-        X_test = pd.DataFrame([base_values] * len(values))
-        X_test[param] = values
-        X_test_scaled = scaler.transform(X_test)
-        predictions = model.predict(X_test_scaled, verbose=0)
         
-        fig, ax = plt.subplots(figsize=(8, 5))
-        ax.plot(values, predictions, label=f'Effect of {param}')
-        ax.set_xlabel(label)
-        ax.set_ylabel('Pressure Gradient (p2 - p1, psi)')
-        ax.set_title(f'Effect of {param} on Pressure Gradient')
-        ax.grid(True)
-        ax.legend()
-        figs.append(fig)
-    
-    logging.info("Generated parameter effect plots")
-    return figs
+        logging.info("Generated parameter effect plots")
+        return figs
+    except Exception as e:
+        st.error(f"Error analyzing parameter effects: {str(e)}")
+        logging.error(f"Parameter effect analysis error: {str(e)}")
+        return []
 
 # Function to save uploaded file to data directory
 def save_uploaded_file(uploaded_file, file_path):
@@ -419,6 +457,7 @@ def save_uploaded_file(uploaded_file, file_path):
         with open(file_path, "wb") as f:
             f.write(uploaded_file.getvalue())
         logging.info(f"Saved file: {file_path}")
+        st.success(f"Saved file: {os.path.basename(file_path)}")
     except Exception as e:
         st.error(f"Error saving file '{uploaded_file.name}': {str(e)}")
         logging.error(f"Error saving file '{uploaded_file.name}' to '{file_path}': {str(e)}")
@@ -452,6 +491,7 @@ def save_uploaded_file(uploaded_file, file_path):
 #                 branch=branch
 #             )
 #         logging.info(f"Pushed file to GitHub: {repo_path}")
+#         st.success(f"Pushed file to GitHub: {repo_path}")
 #     except Exception as e:
 #         st.error(f"Error pushing to GitHub: {str(e)}")
 #         logging.error(f"Error pushing to GitHub: {str(e)}")
@@ -459,6 +499,9 @@ def save_uploaded_file(uploaded_file, file_path):
 
 # Streamlit UI
 st.title("Well Pressure and Depth Calculator")
+st.write("Debug logs are saved to `debug.log`. Check Streamlit Cloud logs for detailed errors.")
+debug_mode = st.checkbox("Enable Debug Mode", value=False)
+
 mode = st.selectbox("Select Mode", ["Polynomial Calculation", "Neural Network Analysis", "GLR Graph Drawer"])
 
 # File uploaders
@@ -468,6 +511,8 @@ if mode in ["Polynomial Calculation", "GLR Graph Drawer"]:
     if reference_file:
         reference_file_path = os.path.join(DATA_DIR, "reference excel.xlsx")
         save_uploaded_file(reference_file, reference_file_path)
+        # Clear cache to ensure new file is processed
+        st.cache_data.clear()
         # # Push to GitHub (uncomment and configure)
         # github_token = st.secrets.get("GITHUB_TOKEN", None)  # Store in secrets.toml
         # repo_name = "your_username/your_repo"  # Replace with your repo
@@ -495,6 +540,8 @@ elif mode == "Neural Network Analysis":
             #     push_to_github(ml_file_path, repo_name, github_token)
             # else:
             #     st.warning(f"GitHub token not found. File '{ml_file.name}' saved locally but not pushed to GitHub.")
+        # Clear cache to ensure new files are processed
+        st.cache_data.clear()
     else:
         st.warning("Please upload at least one ML data Excel file to proceed.")
         logging.warning("No ML data files uploaded")
@@ -502,7 +549,14 @@ elif mode == "Neural Network Analysis":
 
 if mode == "Polynomial Calculation":
     st.write("Enter parameters to calculate pressure and depth values using polynomial formulas.")
-    data_ref = load_reference_data(os.path.join(DATA_DIR, "reference excel.xlsx"))
+    try:
+        data_ref = load_reference_data(os.path.join(DATA_DIR, "reference excel.xlsx"))
+        if debug_mode:
+            st.text(f"Loaded {len(data_ref)} reference data entries")
+    except Exception as e:
+        st.error(f"Failed to load reference data: {str(e)}")
+        logging.error(f"Failed to load reference data: {str(e)}")
+        st.stop()
     with st.form("input_form"):
         col1, col2 = st.columns(2)
         with col1:
@@ -534,17 +588,33 @@ if mode == "Polynomial Calculation":
             st.write(f"**Pressure p2**: {p2:.2f} psi")
             st.subheader("Pressure vs Depth Plot")
             fig = plot_results(p1, y1, y2, p2, D, coeffs, glr, interpolation_status)
-            st.pyplot(fig)
+            if fig:
+                st.pyplot(fig)
+            else:
+                st.error("Failed to generate plot. Check logs for details.")
 
 elif mode == "Neural Network Analysis":
     st.write("Analyzing the effects of parameters on pressure gradient (p2 - p1) using a neural network.")
     if st.button("Run Neural Network Analysis"):
         st.write("Loading machine learning data...")
-        df_ml = load_ml_data(DATA_DIR)
+        try:
+            df_ml = load_ml_data(DATA_DIR)
+            if debug_mode:
+                st.text(f"Loaded {len(df_ml)} rows from {len(os.listdir(DATA_DIR))-1} ML data files")
+        except Exception as e:
+            st.error(f"Failed to load ML data: {str(e)}")
+            logging.error(f"Failed to load ML data: {str(e)}")
+            st.stop()
         st.write("Training neural network...")
         model, scaler = train_neural_network(df_ml)
+        if model is None or scaler is None:
+            st.error("Neural network training failed. Check logs for details.")
+            st.stop()
         st.write("Training complete. Generating plots...")
         figs = analyze_parameter_effects(model, scaler, df_ml)
+        if not figs:
+            st.error("Failed to generate parameter effect plots. Check logs for details.")
+            st.stop()
         st.subheader("Parameter Effects on Pressure Gradient")
         for i, fig in enumerate(figs):
             if i < 10:
@@ -560,9 +630,19 @@ else:  # GLR Graph Drawer
     st.write("Displaying GLR curves for different conduit sizes and production rates based on polynomial formulas.")
     if st.button("Generate GLR Graphs"):
         st.write("Loading reference data...")
-        data_ref = load_reference_data(os.path.join(DATA_DIR, "reference excel.xlsx"))
+        try:
+            data_ref = load_reference_data(os.path.join(DATA_DIR, "reference excel.xlsx"))
+            if debug_mode:
+                st.text(f"Loaded {len(data_ref)} reference data entries")
+        except Exception as e:
+            st.error(f"Failed to load reference data: {str(e)}")
+            logging.error(f"Failed to load reference data: {str(e)}")
+            st.stop()
         st.write("Generating GLR graphs...")
         figs = plot_glr_graphs(data_ref)
+        if not figs:
+            st.error("Failed to generate GLR graphs. Check logs for details.")
+            st.stop()
         st.subheader("GLR Curves")
         for i, fig in enumerate(figs):
             conduit_size = [2.875, 3.5][i // 5]
