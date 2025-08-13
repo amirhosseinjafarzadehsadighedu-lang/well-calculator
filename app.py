@@ -81,7 +81,8 @@ def load_ml_data():
     required_cols = ["p1", "D", "y1", "y2", "p2"]
     for file_name in data_files:
         try:
-            match = re.search(r'([\d.]+)\s*in\s*(\d+)\s*stb-day\s*(\d+)\s*glr', file_name.lower())
+            # Updated regex to handle optional "(1)" or similar suffixes
+            match = re.search(r'([\d.]+)\s*in\s*(\d+)\s*stb-day\s*(\d+)\s*glr(?:\s*\(\d+\))?', file_name.lower())
             if not match:
                 st.warning(f"Could not extract parameters from filename '{file_name}'. Skipping.")
                 continue
