@@ -80,12 +80,14 @@ def load_ml_data():
     dfs_ml = []
     required_cols = ["p1", "D", "y1", "y2", "p2"]
     for file_name in data_files:
+        print(f"Processing file: {file_name}")
         try:
-            # Updated regex to handle optional "(1)" or similar suffixes
             match = re.search(r'([\d.]+)\s*in\s*(\d+)\s*stb-day\s*(\d+)\s*glr(?:\s*\(\d+\))?', file_name.lower())
             if not match:
+                print(f"Failed to match: {file_name}")
                 st.warning(f"Could not extract parameters from filename '{file_name}'. Skipping.")
                 continue
+            print(f"Matched: conduit_size={match.group(1)}, production_rate={match.group(2)}, glr={match.group(3)}")
             conduit_size = float(match.group(1))
             production_rate = float(match.group(2))
             glr = float(match.group(3))
