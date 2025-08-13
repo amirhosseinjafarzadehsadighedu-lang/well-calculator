@@ -28,14 +28,7 @@ INTERPOLATION_RANGES = {
     (3.5, 600): [(0, 4000), (4000, 6000)]
 }
 
-# Load reference Excel file
-try:
-    df_ref = pd.read_excel("data/all equations ei5204.xlsx", header=None)
-except FileNotFoundError:
-    st.error("Reference Excel file 'data/all equations ei5204.xlsx' not found.")
-    st.stop()
-
-# Parsing the name column
+# Function to parse the name column
 def parse_name(name):
     parts = name.split()
     try:
@@ -48,68 +41,78 @@ def parse_name(name):
         st.error(f"Failed to parse reference data name: {name}")
         return None, None, None
 
-# Creating structured data for interpolation
-data_ref = []
-for index, row in df_ref.iterrows():
-    name = row[0]
-    conduit_size, production_rate, glr = parse_name(name)
-    if conduit_size is None:
-        continue
-    coefficients = {
-        'a': float(row[1]),
-        'b': float(row[2]),
-        'c': float(row[3]),
-        'd': float(row[4]),
-        'e': float(row[5])
-    }
-    data_ref.append({
-        'conduit_size': conduit_size,
-        'production_rate': production_rate,
-        'glr': glr,
-        'coefficients': coefficients
-    })
-
-# Load data for neural network
-data_files = [
-    f"data/{f}" for f in os.listdir("data")
-    if f.endswith(".xlsx") and f != "all equations ei5204.xlsx"
-]
-dfs_ml = []
-required_cols = ["p1", "D", "y1", "y2", "p2"]
-for file_name in data_files:
+# Function to load reference data
+@st.cache_data
+def load_reference_data():
     try:
-        match = re.search(r'([\d.]+)\s*in\s*(\d+)\s*stb-day\s*(\d+)\s*glr', file_name.lower())
-        if not match:
-            st.warning(f"Could not extract parameters from filename '{file_name}'. Skipping.")
-            continue
-        conduit_size = float(match.group(1))
-        production_rate = float(match.group(2))
-        glr = float(match.group(3))
-        
-        df_temp = pd.read_excel(file_name, sheet_name=0)
-        for col in required_cols:
-            if col not in df_temp.columns:
-                st.error(f"Required column '{col}' not found in Excel file '{file_name}'.")
-                break
-        else:
-            df_temp = df_temp[required_cols].dropna()
-            df_temp['conduit_size'] = conduit_size
-            df_temp['production_rate'] = production_rate
-            df_temp['GLR'] = glr
-            dfs_ml.append(df_temp)
+        df_ref = pd.read_excel("data/all equations ei5204.xlsx", header=None, engine='openpyxl')
+        data_ref = []
+        for index, row in df_ref.iterrows():
+            name = row[0]
+            conduit_size, production_rate, glr = parse_name(name)
+            if conduit_size is None:
+                continue
+            coefficients = {
+                'a': float(row[1]),
+                'b': float(row[2]),
+                'c': float(row[3]),
+                'd': float(row[4]),
+                'e': float(row[5])
+            }
+            data_ref.append({
+                'conduit_size': conduit_size,
+                'production_rate': production_rate,
+                'glr': glr,
+                'coefficients': coefficients
+            })
+        return data_ref
     except FileNotFoundError:
-        st.error(f"Data Excel file '{file_name}' not found.")
-        continue
-    except Exception as e:
-        st.warning(f"Error processing '{file_name}': {str(e)}. Skipping.")
+        st.error("Reference Excel file 'data/all equations ei5204.xlsx' not found.")
+        st.stop()
 
-if not dfs_ml:
-    st.error("No valid machine learning Excel files were loaded. Please ensure data files are in the 'data/' folder.")
-    st.stop()
-df_ml = pd.concat(dfs_ml, ignore_index=True)
-df_ml['pressure_gradient'] = df_ml['p2'] - df_ml['p1']
+# Function to load ML data
+@st.cache_data
+def load_ml_data():
+    data_files = [
+        f"data/{f}" for f in os.listdir("data")
+        if f.endswith(".xlsx") and f != "all equations ei5204.xlsx"
+    ]
+    dfs_ml = []
+    required_cols = ["p1", "D", "y1", "y2", "p2"]
+    for file_name in data_files:
+        try:
+            match = re.search(r'([\d.]+)\s*in\s*(\d+)\s*stb-day\s*(\d+)\s*glr', file_name.lower())
+            if not match:
+                st.warning(f"Could not extract parameters from filename '{file_name}'. Skipping.")
+                continue
+            conduit_size = float(match.group(1))
+            production_rate = float(match.group(2))
+            glr = float(match.group(3))
+            
+            df_temp = pd.read_excel(file_name, sheet_name=0, engine='openpyxl')
+            for col in required_cols:
+                if col not in df_temp.columns:
+                    st.error(f"Required column '{col}' not found in Excel file '{file_name}'.")
+                    break
+            else:
+                df_temp = df_temp[required_cols].dropna()
+                df_temp['conduit_size'] = conduit_size
+                df_temp['production_rate'] = production_rate
+                df_temp['GLR'] = glr
+                dfs_ml.append(df_temp)
+        except FileNotFoundError:
+            st.error(f"Data Excel file '{file_name}' not found.")
+            continue
+        except Exception as e:
+            st.warning(f"Error processing '{file_name}': {str(e)}. Skipping.")
+    if not dfs_ml:
+        st.error("No valid machine learning Excel files were loaded.")
+        st.stop()
+    df_ml = pd.concat(dfs_ml, ignore_index=True)
+    df_ml['pressure_gradient'] = df_ml['p2'] - df_ml['p1']
+    return df_ml
 
-# Polynomial calculation function (updated for 5th-degree polynomials)
+# Polynomial calculation function (for 5th-degree polynomials)
 def calculate_results(conduit_size_input, production_rate_input, glr_input, p1, D, data_ref):
     if (conduit_size_input, production_rate_input) not in INTERPOLATION_RANGES:
         st.error("Invalid conduit size or production rate.")
@@ -225,52 +228,60 @@ def plot_results(p1, y1, y2, p2, D, coeffs, glr_input, interpolation_status):
     ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=8, frameon=True, edgecolor='black')
     return fig
 
-# New function to plot GLR graphs
+# Function to plot GLR graphs with progress bar
 def plot_glr_graphs(data_ref):
     conduit_sizes = [2.875, 3.5]
     production_rates = [50, 100, 200, 400, 600]
     colors = ['blue', 'red', 'green', 'purple', 'orange', 'cyan', 'magenta', 'brown', 'pink', 'lime']
     figs = []
+    total_graphs = len(conduit_sizes) * len(production_rates)  # 10 graphs
+    progress_bar = st.progress(0)
+    status_text = st.empty()
     
-    for conduit_size in conduit_sizes:
-        for production_rate in production_rates:
-            fig, ax = plt.subplots(figsize=(10, 6))
-            relevant_rows = [
-                entry for entry in data_ref
-                if (abs(entry['conduit_size'] - conduit_size) < 1e-6 and
-                    abs(entry['production_rate'] - production_rate) < 1e-6)
-            ]
-            relevant_rows.sort(key=lambda x: x['glr'])
-            p1_full = np.linspace(0, 4000, 100)
-            
-            for idx, entry in enumerate(relevant_rows):
-                coeffs = entry['coefficients']
-                glr = entry['glr']
-                def polynomial(x, coeffs):
-                    return coeffs['a'] * x**5 + coeffs['b'] * x**4 + coeffs['c'] * x**3 + coeffs['d'] * x**2 + coeffs['e'] * x
-                y1_full = [polynomial(p, coeffs) for p in p1_full]
-                ax.plot(p1_full, y1_full, color=colors[idx % len(colors)], linewidth=2.5, label=f'GLR {glr}')
-                # Label the GLR value at the end point
-                ax.text(p1_full[-1], y1_full[-1], f'{glr}', fontsize=8, color=colors[idx % len(colors)], 
-                        verticalalignment='bottom', horizontalalignment='left')
-            
-            ax.set_xlabel('Gradient Pressure, psi', fontsize=10)
-            ax.set_ylabel('Depth, ft', fontsize=10)
-            ax.set_xlim(0, 4000)
-            ax.set_ylim(0, 31000)
-            ax.invert_yaxis()
-            ax.grid(True, which='major', color='#D3D3D3')
-            ax.grid(True, which='minor', color='#D3D3D3', linestyle='-', alpha=0.5)
-            ax.xaxis.set_major_locator(plt.MultipleLocator(1000))
-            ax.xaxis.set_minor_locator(plt.MultipleLocator(200))
-            ax.yaxis.set_major_locator(plt.MultipleLocator(1000))
-            ax.yaxis.set_minor_locator(plt.MultipleLocator(200))
-            ax.xaxis.set_label_position('top')
-            ax.xaxis.set_ticks_position('top')
-            ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=8, frameon=True, edgecolor='black')
-            ax.set_title(f'GLR Curves (Conduit: {conduit_size} in, Production: {production_rate} stb/day)')
-            figs.append(fig)
+    for i, (conduit_size, production_rate) in enumerate([(cs, pr) for cs in conduit_sizes for pr in production_rates]):
+        status_text.text(f"Generating GLR graph {i+1}/{total_graphs} (Conduit: {conduit_size} in, Production: {production_rate} stb/day)")
+        fig, ax = plt.subplots(figsize=(10, 6))
+        relevant_rows = [
+            entry for entry in data_ref
+            if (abs(entry['conduit_size'] - conduit_size) < 1e-6 and
+                abs(entry['production_rate'] - production_rate) < 1e-6)
+        ]
+        relevant_rows.sort(key=lambda x: x['glr'])
+        p1_full = np.linspace(0, 4000, 100)
+        
+        for idx, entry in enumerate(relevant_rows):
+            coeffs = entry['coefficients']
+            glr = entry['glr']
+            def polynomial(x, coeffs):
+                return coeffs['a'] * x**5 + coeffs['b'] * x**4 + coeffs['c'] * x**3 + coeffs['d'] * x**2 + coeffs['e'] * x
+            y1_full = [polynomial(p, coeffs) for p in p1_full]
+            ax.plot(p1_full, y1_full, color=colors[idx % len(colors)], linewidth=2.5, label=f'GLR {glr}')
+            ax.text(p1_full[-1], y1_full[-1], f'{glr}', fontsize=8, color=colors[idx % len(colors)], 
+                    verticalalignment='bottom', horizontalalignment='left')
+        
+        ax.set_xlabel('Gradient Pressure, psi', fontsize=10)
+        ax.set_ylabel('Depth, ft', fontsize=10)
+        ax.set_xlim(0, 4000)
+        ax.set_ylim(0, 31000)
+        ax.invert_yaxis()
+        ax.grid(True, which='major', color='#D3D3D3')
+        ax.grid(True, which='minor', color='#D3D3D3', linestyle='-', alpha=0.5)
+        ax.xaxis.set_major_locator(plt.MultipleLocator(1000))
+        ax.xaxis.set_minor_locator(plt.MultipleLocator(200))
+        ax.yaxis.set_major_locator(plt.MultipleLocator(1000))
+        ax.yaxis.set_minor_locator(plt.MultipleLocator(200))
+        ax.xaxis.set_label_position('top')
+        ax.xaxis.set_ticks_position('top')
+        ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=8, frameon=True, edgecolor='black')
+        ax.set_title(f'GLR Curves (Conduit: {conduit_size} in, Production: {production_rate} stb/day)')
+        figs.append(fig)
+        
+        # Update progress bar
+        progress = (i + 1) / total_graphs
+        progress_bar.progress(progress)
     
+    progress_bar.empty()
+    status_text.empty()
     return figs
 
 # Neural network training
@@ -363,6 +374,7 @@ mode = st.selectbox("Select Mode", ["Polynomial Calculation", "Neural Network An
 
 if mode == "Polynomial Calculation":
     st.write("Enter parameters to calculate pressure and depth values using polynomial formulas.")
+    data_ref = load_reference_data()  # Load reference data only when needed
     with st.form("input_form"):
         col1, col2 = st.columns(2)
         with col1:
@@ -399,6 +411,8 @@ if mode == "Polynomial Calculation":
 elif mode == "Neural Network Analysis":
     st.write("Analyzing the effects of parameters on pressure gradient (p2 - p1) using a neural network.")
     if st.button("Run Neural Network Analysis"):
+        st.write("Loading machine learning data...")
+        df_ml = load_ml_data()  # Load ML data only when button is clicked
         st.write("Training neural network...")
         model, scaler = train_neural_network(df_ml)
         st.write("Training complete. Generating plots...")
@@ -417,6 +431,8 @@ elif mode == "Neural Network Analysis":
 else:  # GLR Graph Drawer
     st.write("Displaying GLR curves for different conduit sizes and production rates based on polynomial formulas.")
     if st.button("Generate GLR Graphs"):
+        st.write("Loading reference data...")
+        data_ref = load_reference_data()  # Load reference data only when needed
         st.write("Generating GLR graphs...")
         figs = plot_glr_graphs(data_ref)
         st.subheader("GLR Curves")
