@@ -59,7 +59,8 @@ for index, row in df_ref.iterrows():
         'a': float(row[1]),
         'b': float(row[2]),
         'c': float(row[3]),
-        'd': float(row[4])
+        'd': float(row[4]),
+        'e': float(row[5])
     }
     data_ref.append({
         'conduit_size': conduit_size,
@@ -108,7 +109,7 @@ if not dfs_ml:
 df_ml = pd.concat(dfs_ml, ignore_index=True)
 df_ml['pressure_gradient'] = df_ml['p2'] - df_ml['p1']
 
-# Polynomial calculation function
+# Polynomial calculation function (updated for 5th-degree polynomials)
 def calculate_results(conduit_size_input, production_rate_input, glr_input, p1, D, data_ref):
     if (conduit_size_input, production_rate_input) not in INTERPOLATION_RANGES:
         st.error("Invalid conduit size or production rate.")
@@ -178,11 +179,12 @@ def calculate_results(conduit_size_input, production_rate_input, glr_input, p1, 
                     'a': lower_row['coefficients']['a'] + fraction * (higher_row['coefficients']['a'] - lower_row['coefficients']['a']),
                     'b': lower_row['coefficients']['b'] + fraction * (higher_row['coefficients']['b'] - lower_row['coefficients']['b']),
                     'c': lower_row['coefficients']['c'] + fraction * (higher_row['coefficients']['c'] - lower_row['coefficients']['c']),
-                    'd': lower_row['coefficients']['d'] + fraction * (higher_row['coefficients']['d'] - lower_row['coefficients']['d'])
+                    'd': lower_row['coefficients']['d'] + fraction * (higher_row['coefficients']['d'] - lower_row['coefficients']['d']),
+                    'e': lower_row['coefficients']['e'] + fraction * (higher_row['coefficients']['e'] - lower_row['coefficients']['e'])
                 }
                 interpolation_status = "interpolated"
     def polynomial(x, coeffs):
-        return coeffs['a'] * x**3 + coeffs['b'] * x**2 + coeffs['c'] * x + coeffs['d']
+        return coeffs['a'] * x**5 + coeffs['b'] * x**4 + coeffs['c'] * x**3 + coeffs['d'] * x**2 + coeffs['e'] * x
     y1 = polynomial(p1, coeffs)
     y2 = y1 + D
     def root_function(x, target_depth, coeffs):
@@ -196,7 +198,7 @@ def plot_results(p1, y1, y2, p2, D, coeffs, glr_input, interpolation_status):
     fig, ax = plt.subplots(figsize=(10, 6))
     p1_full = np.linspace(0, 4000, 100)
     def polynomial(x, coeffs):
-        return coeffs['a'] * x**3 + coeffs['b'] * x**2 + coeffs['c'] * x + coeffs['d']
+        return coeffs['a'] * x**5 + coeffs['b'] * x**4 + coeffs['c'] * x**3 + coeffs['d'] * x**2 + coeffs['e'] * x
     y1_full = [polynomial(p, coeffs) for p in p1_full]
     label = f'GLR curve ({"Interpolated" if interpolation_status == "interpolated" else "Exact"} GLR {glr_input})'
     ax.plot(p1_full, y1_full, color='blue', linewidth=2.5, label=label)
@@ -210,8 +212,7 @@ def plot_results(p1, y1, y2, p2, D, coeffs, glr_input, interpolation_status):
     ax.set_xlabel('Gradient Pressure, psi', fontsize=10)
     ax.set_ylabel('Depth, ft', fontsize=10)
     ax.set_xlim(0, 4000)
-    max_y = max(y1, y2, max(y1_full)) * 1.1
-    ax.set_ylim(0, max_y)
+    ax.set_ylim(0, 31000)
     ax.invert_yaxis()
     ax.grid(True, which='major', color='#D3D3D3')
     ax.grid(True, which='minor', color='#D3D3D3', linestyle='-', alpha=0.5)
@@ -223,6 +224,54 @@ def plot_results(p1, y1, y2, p2, D, coeffs, glr_input, interpolation_status):
     ax.xaxis.set_ticks_position('top')
     ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=8, frameon=True, edgecolor='black')
     return fig
+
+# New function to plot GLR graphs
+def plot_glr_graphs(data_ref):
+    conduit_sizes = [2.875, 3.5]
+    production_rates = [50, 100, 200, 400, 600]
+    colors = ['blue', 'red', 'green', 'purple', 'orange', 'cyan', 'magenta', 'brown', 'pink', 'lime']
+    figs = []
+    
+    for conduit_size in conduit_sizes:
+        for production_rate in production_rates:
+            fig, ax = plt.subplots(figsize=(10, 6))
+            relevant_rows = [
+                entry for entry in data_ref
+                if (abs(entry['conduit_size'] - conduit_size) < 1e-6 and
+                    abs(entry['production_rate'] - production_rate) < 1e-6)
+            ]
+            relevant_rows.sort(key=lambda x: x['glr'])
+            p1_full = np.linspace(0, 4000, 100)
+            
+            for idx, entry in enumerate(relevant_rows):
+                coeffs = entry['coefficients']
+                glr = entry['glr']
+                def polynomial(x, coeffs):
+                    return coeffs['a'] * x**5 + coeffs['b'] * x**4 + coeffs['c'] * x**3 + coeffs['d'] * x**2 + coeffs['e'] * x
+                y1_full = [polynomial(p, coeffs) for p in p1_full]
+                ax.plot(p1_full, y1_full, color=colors[idx % len(colors)], linewidth=2.5, label=f'GLR {glr}')
+                # Label the GLR value at the end point
+                ax.text(p1_full[-1], y1_full[-1], f'{glr}', fontsize=8, color=colors[idx % len(colors)], 
+                        verticalalignment='bottom', horizontalalignment='left')
+            
+            ax.set_xlabel('Gradient Pressure, psi', fontsize=10)
+            ax.set_ylabel('Depth, ft', fontsize=10)
+            ax.set_xlim(0, 4000)
+            ax.set_ylim(0, 31000)
+            ax.invert_yaxis()
+            ax.grid(True, which='major', color='#D3D3D3')
+            ax.grid(True, which='minor', color='#D3D3D3', linestyle='-', alpha=0.5)
+            ax.xaxis.set_major_locator(plt.MultipleLocator(1000))
+            ax.xaxis.set_minor_locator(plt.MultipleLocator(200))
+            ax.yaxis.set_major_locator(plt.MultipleLocator(1000))
+            ax.yaxis.set_minor_locator(plt.MultipleLocator(200))
+            ax.xaxis.set_label_position('top')
+            ax.xaxis.set_ticks_position('top')
+            ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=8, frameon=True, edgecolor='black')
+            ax.set_title(f'GLR Curves (Conduit: {conduit_size} in, Production: {production_rate} stb/day)')
+            figs.append(fig)
+    
+    return figs
 
 # Neural network training
 def train_neural_network(df_ml):
@@ -258,14 +307,11 @@ def analyze_parameter_effects(model, scaler, df_ml):
     conduit_sizes = [2.875, 3.5]
     production_rates = [50, 100, 200, 400, 600]
     
-    # Generate 10 graphs for GLR effect
     for conduit_size in conduit_sizes:
         for production_rate in production_rates:
-            # Use valid GLR range from INTERPOLATION_RANGES
             glr_ranges = INTERPOLATION_RANGES.get((conduit_size, production_rate), [])
             if not glr_ranges:
                 continue
-            # Take the widest GLR range for plotting
             glr_min = min([r[0] for r in glr_ranges])
             glr_max = max([r[1] for r in glr_ranges])
             glr_values = np.linspace(glr_min, glr_max, 100)
@@ -286,16 +332,15 @@ def analyze_parameter_effects(model, scaler, df_ml):
             ax.legend()
             figs.append(fig)
     
-    # Plot effects of other parameters (D, production_rate, conduit_size)
     params = ["D", "production_rate", "conduit_size"]
     param_labels = ["Depth Offset (ft)", "Production Rate (stb/day)", "Conduit Size (in)"]
     for param, label in zip(params, param_labels):
         if param == "conduit_size":
-            values = [2.875, 3.5]  # Restrict to discrete values
+            values = [2.875, 3.5]
         else:
             values = np.linspace(X[param].min(), X[param].max(), 100 if param != "production_rate" else 5)
             if param == "production_rate":
-                values = [50, 100, 200, 400, 600]  # Restrict to discrete production rates
+                values = [50, 100, 200, 400, 600]
         X_test = pd.DataFrame([base_values] * len(values))
         X_test[param] = values
         X_test_scaled = scaler.transform(X_test)
@@ -314,7 +359,7 @@ def analyze_parameter_effects(model, scaler, df_ml):
 
 # Streamlit UI
 st.title("Well Pressure and Depth Calculator")
-mode = st.selectbox("Select Mode", ["Polynomial Calculation", "Neural Network Analysis"])
+mode = st.selectbox("Select Mode", ["Polynomial Calculation", "Neural Network Analysis", "GLR Graph Drawer"])
 
 if mode == "Polynomial Calculation":
     st.write("Enter parameters to calculate pressure and depth values using polynomial formulas.")
@@ -351,7 +396,7 @@ if mode == "Polynomial Calculation":
             fig = plot_results(p1, y1, y2, p2, D, coeffs, glr, interpolation_status)
             st.pyplot(fig)
 
-else:
+elif mode == "Neural Network Analysis":
     st.write("Analyzing the effects of parameters on pressure gradient (p2 - p1) using a neural network.")
     if st.button("Run Neural Network Analysis"):
         st.write("Training neural network...")
@@ -367,4 +412,16 @@ else:
             else:
                 param = ["D", "production_rate", "conduit_size"][i - 10]
                 st.write(f"**Effect of {param}**")
+            st.pyplot(fig)
+
+else:  # GLR Graph Drawer
+    st.write("Displaying GLR curves for different conduit sizes and production rates based on polynomial formulas.")
+    if st.button("Generate GLR Graphs"):
+        st.write("Generating GLR graphs...")
+        figs = plot_glr_graphs(data_ref)
+        st.subheader("GLR Curves")
+        for i, fig in enumerate(figs):
+            conduit_size = [2.875, 3.5][i // 5]
+            production_rate = [50, 100, 200, 400, 600][i % 5]
+            st.write(f"**Conduit Size: {conduit_size} in, Production Rate: {production_rate} stb/day**")
             st.pyplot(fig)
